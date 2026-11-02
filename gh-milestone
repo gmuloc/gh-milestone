@@ -1,0 +1,246 @@
+#!/usr/bin/env python3
+"""Read GitHub milestones and their issues and pull requests through gh."""
+
+import argparse
+import json
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+
+class Error(Exception):
+    """An error suitable for display without a traceback."""
+
+
+def gh_json(arguments):
+    try:
+        result = subprocess.run(
+            ["gh", *arguments], capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError as exc:
+        raise Error(
+            "GitHub CLI (gh) is required. Install it from https://cli.github.com/."
+        ) from exc
+    if result.returncode:
+        raise Error(
+            result.stderr.strip() or result.stdout.strip() or "gh command failed"
+        )
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise Error("gh returned invalid JSON") from exc
+
+
+class Repository:
+    def __init__(self, repository=None):
+        args = ["repo", "view"]
+        if repository:
+            args.append(repository)
+        info = gh_json([*args, "--json", "nameWithOwner,url"])
+        self.name = info["nameWithOwner"]
+        self.hostname = urlparse(info["url"]).hostname
+        if not self.hostname:
+            raise Error("Could not determine the repository's GitHub hostname")
+
+    def get(self, resource, **parameters):
+        args = [
+            "api",
+            "--hostname",
+            self.hostname,
+            "--method",
+            "GET",
+            f"repos/{self.name}/{resource}",
+        ]
+        for key, value in parameters.items():
+            args.extend(["-f", f"{key}={value}"])
+        return gh_json(args)
+
+    def pages(self, resource, **parameters):
+        page = 1
+        while True:
+            records = self.get(resource, per_page=100, page=page, **parameters)
+            if not isinstance(records, list):
+                raise Error("GitHub returned an unexpected response; expected a list")
+            yield from records
+            if len(records) < 100:
+                return
+            page += 1
+
+    def milestone(self, identifier):
+        if identifier.isascii() and identifier.isdecimal():
+            return self.get(f"milestones/{int(identifier)}")
+        for milestone in self.pages("milestones", state="all"):
+            if milestone["title"] == identifier:
+                return milestone
+        raise Error(f"Milestone {identifier!r} was not found in {self.name}")
+
+
+def positive_integer(value):
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return number
+
+
+def parser():
+    root = argparse.ArgumentParser(
+        prog="gh milestone",
+        description="List milestones and the issues and pull requests assigned to them.",
+        epilog="Uses gh authentication. Run `gh auth login` first. No command defaults to list.",
+    )
+
+    def common(command):
+        # Suppressed defaults let options work before or after the subcommand.
+        command.add_argument(
+            "-R",
+            "--repo",
+            default=argparse.SUPPRESS,
+            metavar="[HOST/]OWNER/REPO",
+            help="repository (default: current repository)",
+        )
+        command.add_argument(
+            "--json",
+            action="store_true",
+            default=argparse.SUPPRESS,
+            help="output complete GitHub API objects as JSON",
+        )
+
+    common(root)
+    commands = root.add_subparsers(dest="command")
+    for name, description in (
+        ("list", "List repository milestones"),
+        ("view", "Show one milestone"),
+        ("issues", "List issues assigned to a milestone"),
+        ("prs", "List pull requests assigned to a milestone"),
+    ):
+        command = commands.add_parser(name, help=description, description=description)
+        common(command)
+        if name != "list":
+            command.add_argument("milestone", help="milestone number or exact title")
+        if name != "view":
+            command.add_argument(
+                "--state", choices=("open", "closed", "all"), default="open"
+            )
+            command.add_argument(
+                "--limit",
+                type=positive_integer,
+                default=30,
+                help="maximum results (default: 30)",
+            )
+    return root
+
+
+def one_line(value):
+    return " ".join(str(value).split())
+
+
+def table(headers, rows):
+    rows = [[one_line(value) for value in row] for row in rows]
+    widths = [
+        max(len(header), *(len(row[i]) for row in rows))
+        for i, header in enumerate(headers)
+    ]
+    for row in [headers, *rows]:
+        print(
+            "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
+        )
+
+
+def render(command, result):
+    if command == "view":
+        due = result.get("due_on") or "none"
+        print(f"{result['title']} (#{result['number']}, {result['state']})")
+        print(result["html_url"])
+        print(f"Due: {due}")
+        print(
+            f"Items: {result['open_issues']} open, {result['closed_issues']} closed (includes PRs)"
+        )
+        if result.get("description"):
+            print(f"\n{result['description']}")
+    elif not result:
+        print(f"No {('milestones' if command == 'list' else command)} found.")
+    elif command == "list":
+        table(
+            ["NUMBER", "TITLE", "STATE", "OPEN", "CLOSED", "DUE"],
+            [
+                [
+                    item["number"],
+                    item["title"],
+                    item["state"],
+                    item["open_issues"],
+                    item["closed_issues"],
+                    (item.get("due_on") or "")[:10],
+                ]
+                for item in result
+            ],
+        )
+    else:
+        table(
+            ["NUMBER", "TITLE", "STATE", "URL"],
+            [
+                [
+                    item["number"],
+                    item["title"],
+                    "merged"
+                    if item.get("pull_request", {}).get("merged_at")
+                    else item["state"],
+                    item["html_url"],
+                ]
+                for item in result
+            ],
+        )
+
+
+def run(argv=None):
+    args = parser().parse_args(argv)
+    command = args.command or "list"
+    repository = Repository(getattr(args, "repo", None))
+    if command == "view":
+        result = repository.milestone(args.milestone)
+    else:
+        state = getattr(args, "state", "open")
+        limit = getattr(args, "limit", 30)
+        if command == "list":
+            records = repository.pages(
+                "milestones", state=state, sort="due_on", direction="asc"
+            )
+        else:
+            milestone = repository.milestone(args.milestone)
+            records = repository.pages(
+                "issues",
+                milestone=milestone["number"],
+                state=state,
+                sort="created",
+                direction="desc",
+            )
+        result = []
+        for item in records:
+            if command != "list" and ("pull_request" in item) != (command == "prs"):
+                continue
+            result.append(item)
+            if len(result) == limit:
+                break
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    else:
+        render(command, result)
+    return 0
+
+
+def main():
+    try:
+        return run()
+    except Error as exc:
+        print(f"gh milestone: {exc}", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    except BrokenPipeError:
+        return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

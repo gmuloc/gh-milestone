@@ -149,6 +149,82 @@ class MilestoneTests(unittest.TestCase):
         output, _ = self.invoke(["view", "7"], lambda *_: milestone())
         self.assertIn("includes PRs", output)
 
+    def test_view_json_without_items_is_unchanged(self):
+        output, calls = self.invoke(["view", "7", "--json"], lambda *_: milestone())
+        self.assertEqual(json.loads(output), milestone())
+        self.assertEqual(len(calls), 2)
+
+    def test_view_items_includes_all_states_and_all_pages(self):
+        closed_issue = issue(101)
+        closed_issue["state"] = "closed"
+        merged_pr = issue(102, pr=True)
+        merged_pr["state"] = "closed"
+        merged_pr["pull_request"]["merged_at"] = "2026-11-02T10:00:00Z"
+
+        def handler(path, query):
+            if path.endswith("milestones/7"):
+                return milestone()
+            self.assertEqual(query["milestone"], "7")
+            self.assertEqual(query["state"], "all")
+            if query["page"] == "1":
+                return [issue(number, pr=number % 2 == 0) for number in range(100)]
+            return [closed_issue, merged_pr]
+
+        output, _ = self.invoke(["view", "7", "--items", "--json"], handler)
+        result = json.loads(output)
+        self.assertEqual(result["milestone"], milestone())
+        self.assertEqual(len(result["items"]), 102)
+        self.assertEqual(result["items"][-2:], [closed_issue, merged_pr])
+
+    def test_view_items_human_output_distinguishes_types_and_merged_prs(self):
+        merged = issue(3, pr=True)
+        merged["state"] = "closed"
+        merged["pull_request"]["merged_at"] = "2026-11-02T10:00:00Z"
+
+        def handler(path, query):
+            return milestone() if path.endswith("milestones/7") else [issue(2), merged]
+
+        output, _ = self.invoke(["view", "7", "--items"], handler)
+        self.assertIn("Release 7", output)
+        self.assertIn("TYPE", output)
+        self.assertIn("ISSUE", output)
+        self.assertIn("PR", output)
+        self.assertIn("merged", output)
+        self.assertIn("https://example.test/3", output)
+
+    def test_view_items_state_and_limit(self):
+        def handler(path, query):
+            if path.endswith("milestones/7"):
+                return milestone()
+            self.assertEqual(query["state"], "open")
+            return [issue(1), issue(2, pr=True)]
+
+        output, _ = self.invoke(
+            ["view", "7", "--items", "--state", "open", "--limit", "1", "--json"],
+            handler,
+        )
+        self.assertEqual([item["number"] for item in json.loads(output)["items"]], [1])
+
+    def test_view_items_empty_milestone(self):
+        output, _ = self.invoke(
+            ["view", "7", "--items"],
+            lambda path, _: milestone() if path.endswith("milestones/7") else [],
+        )
+        self.assertIn("No issues or PRs found.", output)
+
+    def test_view_item_filters_require_items_before_calling_github(self):
+        for option in (["--state", "open"], ["--limit", "1"]):
+            with (
+                self.subTest(option=option),
+                patch("subprocess.run") as gh,
+                contextlib.redirect_stderr(io.StringIO()) as errors,
+                self.assertRaises(SystemExit) as exited,
+            ):
+                run(["view", "7", *option])
+            self.assertEqual(exited.exception.code, 2)
+            self.assertIn("require --items", errors.getvalue())
+            gh.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

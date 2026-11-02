@@ -27,6 +27,12 @@ gh milestone list -R aristanetworks/avd --state all --limit 100
 gh milestone view 111 -R aristanetworks/avd
 gh milestone view 'v6.5.0' -R aristanetworks/avd
 
+# Show the milestone and every assigned issue and PR, including closed/merged items.
+gh milestone view 'v6.5.0' -R aristanetworks/avd --items
+
+# Optionally filter or limit the combined list.
+gh milestone view 111 -R aristanetworks/avd --items --state open --limit 50
+
 # List open issues or PRs assigned to a milestone.
 gh milestone issues 'v6.5.0' -R aristanetworks/avd
 gh milestone prs 111 -R aristanetworks/avd
@@ -44,7 +50,9 @@ Milestone titles must match exactly. An all-digit argument is treated as a miles
 
 Lists default to 30 matching results and open items. Increase `--limit` to retrieve more; the extension follows REST API pages until it reaches the limit or exhausts the results. Milestones are ordered by due date, ascending; issues and PRs by creation time, newest first. Filtering out PRs from issues (and issues from PRs) happens before applying the limit.
 
-`--json` returns the complete REST API objects: an array for lists or an object for `view`. GitHub's milestone `open_issues` and `closed_issues` counts include pull requests, which `view` explicitly labels. The extension does not modify milestones or repository content.
+`view --items` displays a combined table with each item's type, number, title, state, and URL. Unlike the standalone lists, it defaults to **all states and no result limit**, following every page so the full milestone is available locally. Use `--state` or `--limit` with `--items` to narrow the result. Items are ordered newest first; `closed` includes merged PRs, labeled `merged` when GitHub provides the merge timestamp.
+
+`--json` returns the complete REST API objects: an array for lists or the milestone object for plain `view`. With `view --items --json`, it returns `{"milestone": {...}, "items": [...]}`. GitHub's milestone `open_issues` and `closed_issues` counts include pull requests, which `view` explicitly labels. The extension does not modify milestones or repository content.
 
 ## How it works
 

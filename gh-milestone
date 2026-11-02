@@ -120,7 +120,23 @@ def parser():
         common(command)
         if name != "list":
             command.add_argument("milestone", help="milestone number or exact title")
-        if name != "view":
+        if name == "view":
+            command.add_argument(
+                "--items",
+                action="store_true",
+                help="show all assigned issues and PRs, including closed and merged items",
+            )
+            command.add_argument(
+                "--state",
+                choices=("open", "closed", "all"),
+                help="filter --items by state (default: all)",
+            )
+            command.add_argument(
+                "--limit",
+                type=positive_integer,
+                help="maximum --items results (default: no limit)",
+            )
+        else:
             command.add_argument(
                 "--state", choices=("open", "closed", "all"), default="open"
             )
@@ -151,6 +167,8 @@ def table(headers, rows):
 
 def render(command, result):
     if command == "view":
+        items = result.get("items") if "milestone" in result else None
+        result = result.get("milestone", result)
         due = result.get("due_on") or "none"
         print(f"{result['title']} (#{result['number']}, {result['state']})")
         print(result["html_url"])
@@ -160,6 +178,9 @@ def render(command, result):
         )
         if result.get("description"):
             print(f"\n{result['description']}")
+        if items is not None:
+            print()
+            render_items(items, include_type=True)
     elif not result:
         print(f"No {('milestones' if command == 'list' else command)} found.")
     elif command == "list":
@@ -178,28 +199,55 @@ def render(command, result):
             ],
         )
     else:
-        table(
-            ["NUMBER", "TITLE", "STATE", "URL"],
-            [
-                [
-                    item["number"],
-                    item["title"],
-                    "merged"
-                    if item.get("pull_request", {}).get("merged_at")
-                    else item["state"],
-                    item["html_url"],
-                ]
-                for item in result
-            ],
+        render_items(result)
+
+
+def render_items(items, include_type=False):
+    if not items:
+        print("No issues or PRs found.")
+        return
+    headers = ["NUMBER", "TITLE", "STATE", "URL"]
+    rows = []
+    for item in items:
+        state = (
+            "merged" if item.get("pull_request", {}).get("merged_at") else item["state"]
         )
+        row = [item["number"], item["title"], state, item["html_url"]]
+        if include_type:
+            row.insert(0, "PR" if "pull_request" in item else "ISSUE")
+        rows.append(row)
+    if include_type:
+        headers.insert(0, "TYPE")
+    table(headers, rows)
 
 
 def run(argv=None):
-    args = parser().parse_args(argv)
+    argument_parser = parser()
+    args = argument_parser.parse_args(argv)
     command = args.command or "list"
+    if (
+        command == "view"
+        and not args.items
+        and (args.state is not None or args.limit is not None)
+    ):
+        argument_parser.error("view --state and --limit require --items")
     repository = Repository(getattr(args, "repo", None))
     if command == "view":
         result = repository.milestone(args.milestone)
+        if args.items:
+            records = repository.pages(
+                "issues",
+                milestone=result["number"],
+                state=args.state or "all",
+                sort="created",
+                direction="desc",
+            )
+            items = []
+            for item in records:
+                items.append(item)
+                if args.limit is not None and len(items) == args.limit:
+                    break
+            result = {"milestone": result, "items": items}
     else:
         state = getattr(args, "state", "open")
         limit = getattr(args, "limit", 30)

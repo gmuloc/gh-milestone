@@ -149,6 +149,49 @@ class MilestoneTests(unittest.TestCase):
         output, _ = self.invoke(["view", "7"], lambda *_: milestone())
         self.assertIn("includes PRs", output)
 
+    def test_terminal_output_escapes_untrusted_controls(self):
+        payload = "Café\x1b]52;c;VEVTVA==\x07\x9b2J\r\x00\x7f\u202e\u2066"
+        record = milestone(title=payload)
+        record.update(description=f"First line\n{payload}\tlast", html_url=payload)
+        item = issue(1)
+        item.update(title=payload, html_url=payload)
+
+        def handler(path, _):
+            if path.endswith("milestones/7"):
+                return record
+            return [item] if path.endswith("issues") else [record]
+
+        for arguments in (["list"], ["view", "7", "--items"], ["issues", "7"]):
+            with self.subTest(arguments=arguments):
+                output, _ = self.invoke(arguments, handler)
+                self.assertNotRegex(output, "[\x00-\x08\x0b-\x1f\x7f-\x9f\u202e\u2066]")
+                self.assertIn("Café\\x1b]52;", output)
+                self.assertIn("\\u202e\\u2066", output)
+                if arguments[0] == "view":
+                    self.assertIn("First line\n", output)
+                    self.assertIn("\tlast", output)
+
+    def test_json_escapes_controls_without_changing_values(self):
+        record = milestone(title="Café\x1b\x9b\u202e\u2066")
+        output, _ = self.invoke(["view", "7", "--json"], lambda *_: record)
+        self.assertTrue(output.isascii())
+        self.assertEqual(json.loads(output), record)
+
+    def test_gh_error_terminal_controls_are_escaped(self):
+        completed = subprocess.CompletedProcess(
+            ["gh"], 1, "", "Failure\x1b[2J\x9b2J\u202e"
+        )
+        errors = io.StringIO()
+        with (
+            patch("subprocess.run", return_value=completed),
+            patch("sys.argv", ["gh-milestone"]),
+            contextlib.redirect_stderr(errors),
+        ):
+            self.assertEqual(MODULE["main"](), 1)
+        self.assertEqual(
+            errors.getvalue(), "gh milestone: Failure\\x1b[2J\\x9b2J\\u202e\n"
+        )
+
     def test_view_json_without_items_is_unchanged(self):
         output, calls = self.invoke(["view", "7", "--json"], lambda *_: milestone())
         self.assertEqual(json.loads(output), milestone())

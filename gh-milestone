@@ -149,8 +149,30 @@ def parser():
     return root
 
 
+def terminal_text(value):
+    """Make terminal controls visible while preserving ordinary text and layout."""
+    result = []
+    for character in str(value):
+        code = ord(character)
+        if (
+            (code < 32 and character not in "\n\t")
+            or 0x7F <= code <= 0x9F
+            or code in (0x061C, 0x200E, 0x200F)
+            or 0x202A <= code <= 0x202E
+            or 0x2066 <= code <= 0x2069
+        ):
+            result.append(f"\\x{code:02x}" if code <= 0xFF else f"\\u{code:04x}")
+        else:
+            result.append(character)
+    return "".join(result)
+
+
+def terminal_print(*values, **kwargs):
+    print(*(terminal_text(value) for value in values), **kwargs)
+
+
 def one_line(value):
-    return " ".join(str(value).split())
+    return " ".join(terminal_text(value).split())
 
 
 def table(headers, rows):
@@ -160,7 +182,7 @@ def table(headers, rows):
         for i, header in enumerate(headers)
     ]
     for row in [headers, *rows]:
-        print(
+        terminal_print(
             "  ".join(value.ljust(width) for value, width in zip(row, widths)).rstrip()
         )
 
@@ -170,14 +192,14 @@ def render(command, result):
         items = result.get("items") if "milestone" in result else None
         result = result.get("milestone", result)
         due = result.get("due_on") or "none"
-        print(f"{result['title']} (#{result['number']}, {result['state']})")
-        print(result["html_url"])
-        print(f"Due: {due}")
-        print(
+        terminal_print(f"{result['title']} (#{result['number']}, {result['state']})")
+        terminal_print(result["html_url"])
+        terminal_print(f"Due: {due}")
+        terminal_print(
             f"Items: {result['open_issues']} open, {result['closed_issues']} closed (includes PRs)"
         )
         if result.get("description"):
-            print(f"\n{result['description']}")
+            terminal_print(f"\n{result['description']}")
         if items is not None:
             print()
             render_items(items, include_type=True)
@@ -272,7 +294,7 @@ def run(argv=None):
             if len(result) == limit:
                 break
     if getattr(args, "json", False):
-        print(json.dumps(result, indent=2, ensure_ascii=False))
+        print(json.dumps(result, indent=2, ensure_ascii=True))
     else:
         render(command, result)
     return 0
@@ -282,7 +304,7 @@ def main():
     try:
         return run()
     except Error as exc:
-        print(f"gh milestone: {exc}", file=sys.stderr)
+        terminal_print(f"gh milestone: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         return 130

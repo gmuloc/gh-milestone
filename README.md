@@ -7,7 +7,7 @@ All code and documentation in this repository were written by Codex, an AI agent
 ## Requirements
 
 - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated for the repositories you want to browse.
-- Python 3.9 or newer, available as `python3` on your `PATH`.
+- A currently supported Python release (3.11 or newer), available as `python3` on your `PATH`.
 
 No additional Python packages are needed.
 
